@@ -1,0 +1,16 @@
+[
+  {
+    "arch": "amd64",
+    "name": "sing-box-1.14.0-openbox-tcp1-linux-amd64-musl.tar.gz",
+    "sha256": "d8b9adbf1ad2a124c60d3a2bbfbc93cb4703288788489a3b1d1d0d1a994d8271",
+    "binary_sha256": "9c122a0c64ddb81bc0d0064c98842200d1de7fb7fa035bdc93ddc85ae814d296",
+    "size": 32185169
+  },
+  {
+    "arch": "arm64",
+    "name": "sing-box-1.14.0-openbox-tcp1-linux-arm64-musl.tar.gz",
+    "sha256": "1cd15570e18cc9e745480a5219a139784fea439ea283e722ba24f5bd73d13a61",
+    "binary_sha256": "c678e4559c47a9c15201e490bb5e9ec7220f0d61c8dd79e65a599dc1609f668f",
+    "size": 29481199
+  }
+]

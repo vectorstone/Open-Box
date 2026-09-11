@@ -332,9 +332,13 @@ log "DT_NEEDED 校验通过($ARCH): $(printf '%s' "$NODE_NEEDED" | tr '\n' ' ')"
 # 此时不再下载官方资产,meta.json 的 singboxVersion 记录 SINGBOX_LOCAL_VERSION(面板与
 # 升级脚本都读它),同目录下的 BUILD-INFO.json / LICENSE 一并带上(自编译内核的溯源信息,
 # 原生资产里没有)。二进制仍要过第 7 步的静态链接守卫,另外这里先按 ELF e_machine 卡架构。
+# 没显式给 SINGBOX_LOCAL_SHA256 时,按 scripts/singbox-tcp-dns-hotfix/kernel-manifest.json
+# 里该架构的 binary_sha256 核对——那是 fork 记录"这个内核的哪个二进制是好的"的地方,
+# 免得本地拷一份来路不明的内核就被打进了发布包。
 SINGBOX_LOCAL_BIN="${SINGBOX_LOCAL_BIN:-}"
 SINGBOX_LOCAL_VERSION="${SINGBOX_LOCAL_VERSION:-}"
 SINGBOX_LOCAL_SHA256="${SINGBOX_LOCAL_SHA256:-}"
+SINGBOX_MANIFEST="$ROOT/scripts/singbox-tcp-dns-hotfix/kernel-manifest.json"
 
 if [ -n "$SINGBOX_LOCAL_BIN" ]; then
   [ -n "$SINGBOX_LOCAL_VERSION" ] || {
@@ -345,6 +349,27 @@ if [ -n "$SINGBOX_LOCAL_BIN" ]; then
     echo "ERROR: SINGBOX_LOCAL_BIN 指向的文件不存在: $SINGBOX_LOCAL_BIN" >&2
     exit 1
   }
+  if [ -z "$SINGBOX_LOCAL_SHA256" ] && [ -f "$SINGBOX_MANIFEST" ]; then
+    SINGBOX_LOCAL_SHA256=$(python3 - "$SINGBOX_MANIFEST" "$SINGBOX_ARCH" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    manifest = json.load(handle)
+for entry in manifest:
+    if entry.get("arch") == sys.argv[2]:
+        print(entry.get("binary_sha256", ""))
+        break
+PY
+)
+    if [ -z "$SINGBOX_LOCAL_SHA256" ]; then
+      echo "ERROR: kernel-manifest.json 里没有 $SINGBOX_ARCH 的记录,无法核对本地内核。" >&2
+      echo "  要么把该架构的 binary_sha256 补进 $SINGBOX_MANIFEST," >&2
+      echo "  要么显式传 SINGBOX_LOCAL_SHA256=<期望哈希>。" >&2
+      exit 1
+    fi
+    log "内核哈希取自 kernel-manifest.json($SINGBOX_ARCH)"
+  fi
   if [ -n "$SINGBOX_LOCAL_SHA256" ]; then
     _local_sha=$(sha256_of "$SINGBOX_LOCAL_BIN")
     if [ "$_local_sha" != "$SINGBOX_LOCAL_SHA256" ]; then

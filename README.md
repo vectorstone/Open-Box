@@ -55,8 +55,22 @@ OpenWrt 上的一体化透明代理:一条命令装完 sing-box 内核和管理�
 本仓库是 [liandu2024/Open-Box](https://github.com/liandu2024/Open-Box) 的 fork(`vectorstone/Open-Box`),相对上游多了三件事:
 
 - **链式代理**(前置 → 落地):面板「分流 → 链式代理」配,说明见 [`docs/chain-proxy.md`](docs/chain-proxy.md)。
-- **自编译 sing-box 内核**(`1.14.0-openbox-tcp1`,静态 musl,官方发布页上没有这个资产):发布包在本地构建,
-  `SINGBOX_LOCAL_BIN=<内核路径> SINGBOX_LOCAL_VERSION=<版本> bash scripts/build-release.sh arm64 dist-release`,
+- **内核来源可复现**:`1.14.0-openbox-tcp1`(上游 v0.1.158 起的 TCP DNS 兼容构建)的补丁、构建脚本、回归测试、工具链获取脚本与哈希清单都随仓库分发在
+  [`scripts/singbox-tcp-dns-hotfix/`](scripts/singbox-tcp-dns-hotfix/)。发布包不在 CI 上自动出,而是在本地两步构建:
+
+  ```bash
+  # 1) 由上游 sing-box v1.14.0 源码 + 补丁构建内核
+  #    (需要 Chromium clang 与 OpenWrt musl sysroot:scripts/singbox-tcp-dns-hotfix/toolchain-reference/)
+  CC='<clang> --target=aarch64-openwrt-linux-musl --sysroot=<sysroot>' \
+  CXX='<clang++> --target=aarch64-openwrt-linux-musl --sysroot=<sysroot>' \
+    bash scripts/singbox-tcp-dns-hotfix/build.sh arm64 .build-cache/tcp-dns-hotfix
+
+  # 2) 用这份内核出发布包(哈希默认按 kernel-manifest.json 核对,不用手抄)
+  SINGBOX_LOCAL_BIN=.build-cache/tcp-dns-hotfix/sing-box-1.14.0-openbox-tcp1-linux-arm64 \
+  SINGBOX_LOCAL_VERSION=1.14.0-openbox-tcp1 \
+    bash scripts/build-release.sh arm64 dist-release
+  ```
+
   CI 不再"打标签即发版"(见 `.github/workflows/release.yml` 顶部说明)。
 - **install / update 的下载源指向本 fork**:面板与 LuCI 兜底页的「一键升级」都从本仓库的 release 取包。
 
