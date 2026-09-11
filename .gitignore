@@ -9,3 +9,5 @@ panel/data/
 .dev-panel.log
 panel/.tools/sing-box
 .build-cache/
+# build-release.sh 的输出目录(本地出包用;CI 里作为 artifact 上传,同样不入库)
+dist-release/
