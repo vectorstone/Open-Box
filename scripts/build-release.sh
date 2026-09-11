@@ -124,6 +124,17 @@ ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
 PANEL_DIR="$ROOT/panel"
 CACHE_DIR="$ROOT/.build-cache"
 
+# CI 用 corepack 固定 pnpm 版本;本机(装了全局 pnpm、没有 corepack)退化为直接用 pnpm。
+# 两条路径都要有,否则"本地也能出发布包"(P6 的目标之一)会在第一步就断掉。
+if command -v corepack >/dev/null 2>&1; then
+  PNPM="corepack pnpm"
+elif command -v pnpm >/dev/null 2>&1; then
+  PNPM="pnpm"
+else
+  echo "ERROR: 需要 corepack 或 pnpm 来构建面板(两者都没有)" >&2
+  exit 1
+fi
+
 mkdir -p "$CACHE_DIR" "$OUTDIR_ARG"
 OUTDIR=$(CDPATH= cd -- "$OUTDIR_ARG" && pwd)
 
@@ -137,6 +148,21 @@ sha256_of() {
   else
     shasum -a 256 "$1" | awk '{print $1}'
   fi
+}
+
+# 读 ELF 的 e_machine,只为给"本地自定义内核"把关:塞错架构的二进制(比如把 amd64 的
+# 打进 arm64 包)静态链接守卫查不出来,但装到路由器上内核根本起不来。返回值:
+# x86-64 / aarch64 / unknown。
+elf_machine() {
+  python3 - "$1" <<'PY'
+import struct, sys
+with open(sys.argv[1], 'rb') as f:
+    head = f.read(20)
+if head[:4] != b'\x7fELF':
+    print('not-elf'); raise SystemExit(0)
+endian = '<' if head[5] == 1 else '>'
+print({0x3E: 'x86-64', 0xB7: 'aarch64'}.get(struct.unpack_from(endian + 'H', head, 18)[0], 'unknown'))
+PY
 }
 
 # 下载前先用 Range 请求探活(比 HEAD 更可靠:GitHub/S3 的预签名下载链接常常只对
@@ -200,12 +226,12 @@ mkdir -p "$STAGE/node/lib" "$STAGE/panel" "$STAGE/bin" "$STAGE/openwrt"
 
 # ---- 1. 构建前端 ----
 log "构建面板前端 (vite build)..."
-(cd "$PANEL_DIR" && corepack pnpm run build)
+(cd "$PANEL_DIR" && $PNPM run build)
 cp -R "$PANEL_DIR/dist" "$STAGE/panel/dist"
 
 # ---- 2. pnpm deploy 出自包含 server ----
 log "打包面板后端 (pnpm deploy --prod)..."
-(cd "$PANEL_DIR" && corepack pnpm --filter=./server deploy --prod "$STAGE/panel/server")
+(cd "$PANEL_DIR" && $PNPM --filter=./server deploy --prod "$STAGE/panel/server")
 
 # ---- 3. 下载并解出 musl Node ----
 NODE_TARBALL="node-v${NODE_VERSION}-linux-${ARCH}-musl.tar.xz"
@@ -295,24 +321,72 @@ if [ -n "$BAD_NEEDED" ]; then
 fi
 log "DT_NEEDED 校验通过($ARCH): $(printf '%s' "$NODE_NEEDED" | tr '\n' ' ')"
 
-# ---- 6. 下载并解出 sing-box(注意 x64→amd64 映射;必须是 -musl 资产,见上)----
-SINGBOX_TARBALL="sing-box-${SINGBOX_VERSION}-linux-${SINGBOX_ARCH}-musl.tar.gz"
-SINGBOX_URL="https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_VERSION}/${SINGBOX_TARBALL}"
-SINGBOX_CACHE="$CACHE_DIR/$SINGBOX_TARBALL"
-fetch_cached "$SINGBOX_URL" "$SINGBOX_CACHE" "sing-box $SINGBOX_VERSION ($SINGBOX_ARCH)" "$SINGBOX_SHA256"
+# ---- 6. sing-box 内核 ----
+# 默认走 SagerNet 官方钦定版(版本 + 每个架构的 sha256 固定在文件顶部)。
+# 也支持塞一份"本机自编译的内核"——例如带 TCP 调优、官方发布页上根本不存在的
+# 1.14.0-openbox-tcp1:
+#   SINGBOX_LOCAL_BIN=/path/to/sing-box \
+#   SINGBOX_LOCAL_VERSION=1.14.0-openbox-tcp1 \
+#   [SINGBOX_LOCAL_SHA256=<期望的 sha256>] \
+#   bash scripts/build-release.sh arm64 dist-release
+# 此时不再下载官方资产,meta.json 的 singboxVersion 记录 SINGBOX_LOCAL_VERSION(面板与
+# 升级脚本都读它),同目录下的 BUILD-INFO.json / LICENSE 一并带上(自编译内核的溯源信息,
+# 原生资产里没有)。二进制仍要过第 7 步的静态链接守卫,另外这里先按 ELF e_machine 卡架构。
+SINGBOX_LOCAL_BIN="${SINGBOX_LOCAL_BIN:-}"
+SINGBOX_LOCAL_VERSION="${SINGBOX_LOCAL_VERSION:-}"
+SINGBOX_LOCAL_SHA256="${SINGBOX_LOCAL_SHA256:-}"
 
-log "解出 sing-box..."
-SINGBOX_EXTRACT_DIR="$STAGE/.singbox-extract"
-mkdir -p "$SINGBOX_EXTRACT_DIR"
-tar -xzf "$SINGBOX_CACHE" -C "$SINGBOX_EXTRACT_DIR"
-SINGBOX_BIN=$(find "$SINGBOX_EXTRACT_DIR" -type f -name sing-box | head -n 1)
-if [ -z "$SINGBOX_BIN" ]; then
-  echo "ERROR: sing-box tarball 里找不到 sing-box 二进制" >&2
-  exit 1
+if [ -n "$SINGBOX_LOCAL_BIN" ]; then
+  [ -n "$SINGBOX_LOCAL_VERSION" ] || {
+    echo "ERROR: 用 SINGBOX_LOCAL_BIN 时必须同时给 SINGBOX_LOCAL_VERSION(写进 meta.json 的真实内核版本)" >&2
+    exit 1
+  }
+  [ -f "$SINGBOX_LOCAL_BIN" ] || {
+    echo "ERROR: SINGBOX_LOCAL_BIN 指向的文件不存在: $SINGBOX_LOCAL_BIN" >&2
+    exit 1
+  }
+  if [ -n "$SINGBOX_LOCAL_SHA256" ]; then
+    _local_sha=$(sha256_of "$SINGBOX_LOCAL_BIN")
+    if [ "$_local_sha" != "$SINGBOX_LOCAL_SHA256" ]; then
+      echo "ERROR: 本地内核 sha256 与 SINGBOX_LOCAL_SHA256 不符,拒绝打包" >&2
+      echo "  期望: $SINGBOX_LOCAL_SHA256" >&2
+      echo "  实际: $_local_sha" >&2
+      exit 1
+    fi
+  fi
+  if [ "$ARCH" = "x64" ]; then EXPECT_MACHINE="x86-64"; else EXPECT_MACHINE="aarch64"; fi
+  _machine=$(elf_machine "$SINGBOX_LOCAL_BIN")
+  if [ "$_machine" != "$EXPECT_MACHINE" ]; then
+    echo "ERROR: 本地内核架构不符:期望 $EXPECT_MACHINE,实际 $_machine($SINGBOX_LOCAL_BIN)" >&2
+    exit 1
+  fi
+  log "使用本地自定义内核: $SINGBOX_LOCAL_BIN ($SINGBOX_LOCAL_VERSION, $_machine)"
+  cp "$SINGBOX_LOCAL_BIN" "$STAGE/bin/sing-box"
+  chmod +x "$STAGE/bin/sing-box"
+  for extra in "$SINGBOX_LOCAL_BIN.BUILD-INFO.json" "$SINGBOX_LOCAL_BIN.LICENSE"; do
+    [ -f "$extra" ] && cp "$extra" "$STAGE/bin/"
+  done
+  # meta.json 与发布说明读的是这个变量,改成真实内核版本
+  SINGBOX_VERSION="$SINGBOX_LOCAL_VERSION"
+else
+  SINGBOX_TARBALL="sing-box-${SINGBOX_VERSION}-linux-${SINGBOX_ARCH}-musl.tar.gz"
+  SINGBOX_URL="https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_VERSION}/${SINGBOX_TARBALL}"
+  SINGBOX_CACHE="$CACHE_DIR/$SINGBOX_TARBALL"
+  fetch_cached "$SINGBOX_URL" "$SINGBOX_CACHE" "sing-box $SINGBOX_VERSION ($SINGBOX_ARCH)" "$SINGBOX_SHA256"
+
+  log "解出 sing-box..."
+  SINGBOX_EXTRACT_DIR="$STAGE/.singbox-extract"
+  mkdir -p "$SINGBOX_EXTRACT_DIR"
+  tar -xzf "$SINGBOX_CACHE" -C "$SINGBOX_EXTRACT_DIR"
+  SINGBOX_BIN=$(find "$SINGBOX_EXTRACT_DIR" -type f -name sing-box | head -n 1)
+  if [ -z "$SINGBOX_BIN" ]; then
+    echo "ERROR: sing-box tarball 里找不到 sing-box 二进制" >&2
+    exit 1
+  fi
+  cp "$SINGBOX_BIN" "$STAGE/bin/sing-box"
+  chmod +x "$STAGE/bin/sing-box"
+  rm -rf "$SINGBOX_EXTRACT_DIR"
 fi
-cp "$SINGBOX_BIN" "$STAGE/bin/sing-box"
-chmod +x "$STAGE/bin/sing-box"
-rm -rf "$SINGBOX_EXTRACT_DIR"
 
 # ---- 7. 构建期依赖守卫(P6 复审 Minor):确认 sing-box 二进制真正静态链接。
 # 上面第 6 步只是"下载了带 -musl 后缀的资产名",并不能保证 SagerNet 未来某天不会

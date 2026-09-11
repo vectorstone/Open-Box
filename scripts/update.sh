@@ -48,7 +48,7 @@
 
 set -eu
 
-REPO="liandu2024/Open-Box"
+REPO="vectorstone/Open-Box"
 INSTALL_ROOT="/opt/open-box"
 MIN_FREE_KB=$((512 * 1024))
 # /tmp 通常是 tmpfs(内存),这里只放下载下来的压缩包(实测约 78MB),留出安全余量;

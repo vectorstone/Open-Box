@@ -21,7 +21,7 @@
 
 set -eu
 
-REPO="liandu2024/Open-Box"
+REPO="vectorstone/Open-Box"
 INSTALL_ROOT="/opt/open-box"
 MIN_FREE_KB=$((512 * 1024))
 # 450000KB(≈440MB)而不是标称的 512*1024:512MB 设备的 /proc/meminfo MemTotal 实测
@@ -209,7 +209,7 @@ fetch_to_file() {
 }
 
 # 镜像通道把整条 URL(含协议头)拼在前缀后面,例如:
-#   https://<前缀>/https://github.com/liandu2024/Open-Box/releases/...
+#   https://<前缀>/https://github.com/vectorstone/Open-Box/releases/...
 # 这与设计文档给出的 raw.githubusercontent 加速示例是同一种拼法,直连/api/release 三类
 # URL 统一走这条规则,方便镜像服务按同一套反代规则处理。
 build_url() {

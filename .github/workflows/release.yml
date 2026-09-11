@@ -1,19 +1,23 @@
 name: Release
 
-# 触发:推送 v* 标签(例如 v1.0.0)。打包本身是纯下载 + 拷贝,不涉及交叉编译,
-# 所以 x64 与 arm64 两种目标架构都能在 ubuntu-latest 上构建(见
-# scripts/build-release.sh 头部注释)。
-
+# 触发:默认**不**在推送 v* 标签时自动发布。
+# 打包本身是纯下载 + 拷贝,不涉及交叉编译,所以 x64 与 arm64 两种目标架构都能在
+# ubuntu-latest 上构建(见 scripts/build-release.sh 头部注释)——但本 fork
+# (vectorstone/Open-Box)的发布包要带本机自编译的 sing-box 内核(例如
+# 1.14.0-openbox-tcp1,官方发布页上没有这个资产),runner 取不到它,只能本地出包:
+#   SINGBOX_LOCAL_BIN=<内核路径> SINGBOX_LOCAL_VERSION=<版本> \
+#     bash scripts/build-release.sh arm64 dist-release
+#   gh release create <tag> dist-release/*.tar.gz dist-release/*.sha256 -R vectorstone/Open-Box
+# 想恢复"打标签即自动发布"时,把下面的 push:tags 放开,并让 build-release.sh 能取到
+# 内核(例如把内核作为本仓库另一个 release 的资产)。保留 workflow_dispatch 便于手动跑。
 on:
-  push:
-    tags:
-      - 'v*'
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 env:
-  OPENBOX_REPO: liandu2024/Open-Box
+  OPENBOX_REPO: vectorstone/Open-Box
 
 jobs:
   build:
