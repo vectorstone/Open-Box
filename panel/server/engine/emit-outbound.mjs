@@ -57,5 +57,11 @@ export const emitOutbound = (node) => {
   if (node.type === 'wireguard') throw new Error('wireguard must be emitted as an endpoint (use emitEndpoint)')
   const emitter = EMITTERS[node.type]
   if (!emitter) throw new Error(`no outbound emitter for type: ${node.type}`)
-  return emitter(node)
+  const outbound = emitter(node)
+  // 订阅自带的链路信息:sing-box JSON 订阅的 detour、Clash 的 dialer-proxy(clash.mjs 归一
+  // 到这里)。原样带上,是否真的生效由 chain.mjs 在生成配置时判定——指向不存在的 tag 或
+  // 成环会被丢弃,而不是留给内核运行期 FATAL。
+  const detour = node.fields && node.fields.detour
+  if (typeof detour === 'string' && detour) outbound.detour = detour
+  return outbound
 }

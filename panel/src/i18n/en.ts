@@ -510,6 +510,22 @@ const en = {
   routingPresetGithub: 'GitHub',
   routingPresetTelegram: 'Telegram',
 
+  // --- Chain proxy card ---
+  routingChainTitle: 'Chain proxy',
+  routingChainDescription:
+    'Route a node through another one: traffic hits the front node first, and the front node dials the exit. The front node must be directly reachable.',
+  routingChainEmpty: 'No chains yet — every node dials out directly.',
+  routingChainAdd: 'Add chain',
+  routingChainLandingLabel: 'Exit node',
+  routingChainViaLabel: 'Front node',
+  routingChainRemove: 'Remove',
+  routingChainMissingLanding: 'This node is gone — the chain will not take effect.',
+  routingChainMissingVia: 'The front node is gone — the chain will not take effect.',
+  routingChainViaContainsLanding:
+    'The front group contains the exit itself, which would form a loop — the chain will not take effect.',
+  routingChainLoadFailed: "Couldn't load available nodes: {message}",
+  routingChainNeedTwoNodes: 'You need at least two available nodes to build a chain.',
+
   // --- Region defaults card ---
   routingRegionTitle: 'Region defaults',
   routingRegionDescription: 'Apply recommended routing and DNS settings for a region as a starting point.',

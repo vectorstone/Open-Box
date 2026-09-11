@@ -161,3 +161,25 @@ proxies:
   assert.equal(r.fields.transport.headers.Host, 'cdn.com')
   assert.ok(skipped.some((s) => s.name === 'SS-Plugin'))
 })
+
+test('dialer-proxy 收进 fields.detour(与 sing-box 的 detour 语义一致)', () => {
+  const doc = `
+proxies:
+  - name: "前置-SS"
+    type: ss
+    server: a.example.com
+    port: 8388
+    cipher: aes-256-gcm
+    password: pw
+  - name: "落地-SS"
+    type: ss
+    server: b.example.com
+    port: 8388
+    cipher: aes-256-gcm
+    password: pw
+    dialer-proxy: "前置-SS"
+`
+  const { nodes } = parseClashProxies(doc)
+  assert.equal(nodes.find((n) => n.tag === '落地-SS').fields.detour, '前置-SS')
+  assert.equal(nodes.find((n) => n.tag === '前置-SS').fields.detour, undefined)
+})

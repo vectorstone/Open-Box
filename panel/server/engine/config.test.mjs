@@ -92,3 +92,96 @@ test('dns.mode=dnsmasq: hijack 规则仅限 dns-in 入站(不自环),增 DNS 入
   assert.equal(dnsIn.listen, '127.0.0.1')
   assert.equal(dnsIn.listen_port, 7853)
 })
+
+// -------- 链式代理(profile.chain → 出站 detour) --------
+
+const chainNodes = [
+  ...nodes,
+  createNode({ tag: '日本-01', type: 'shadowsocks', server: 'b.com', server_port: 8388, fields: { method: 'aes-256-gcm', password: 'pw' }, source: 'clash' }),
+]
+const chainRegionGroups = [...regionGroups, { name: '日本', type: 'urltest', nodeTags: ['日本-01'] }]
+const withChain = (chain) => ({ ...profile, chain })
+
+test('chain 缺省(老 profile 没有这个字段)不产出任何 detour', () => {
+  const c = buildConfig({ nodes: chainNodes, regionGroups: chainRegionGroups, profile })
+  assert.ok(c.outbounds.every((o) => o.detour === undefined))
+  assert.ok(c.endpoints.every((e) => e.detour === undefined))
+})
+
+test('chain: 落地节点带上指向前置节点的 detour', () => {
+  const c = buildConfig({
+    nodes: chainNodes,
+    regionGroups: chainRegionGroups,
+    profile: withChain([{ landing: '美国-01', via: '日本-01' }]),
+  })
+  const landing = c.outbounds.find((o) => o.tag === '美国-01')
+  assert.equal(landing.detour, '日本-01')
+  // 前置自己不带 detour(它就是第一跳)
+  assert.equal(c.outbounds.find((o) => o.tag === '日本-01').detour, undefined)
+})
+
+test('chain: 前置也可以是策略组', () => {
+  const c = buildConfig({
+    nodes: chainNodes,
+    regionGroups: chainRegionGroups,
+    profile: withChain([{ landing: '美国-01', via: '日本' }]),
+  })
+  assert.equal(c.outbounds.find((o) => o.tag === '美国-01').detour, '日本')
+})
+
+test('chain: 前置是包含落地自己的组(默认那个"自动组")→ 整条丢弃,否则内核 FATAL', () => {
+  const autoGroup = [{ id: 'all-auto', name: '所有-自动', type: 'urltest', allNodes: true, members: [], interval: '3m', tolerance: 50 }]
+  const c = buildConfig({
+    nodes: chainNodes,
+    regionGroups: chainRegionGroups,
+    userGroups: autoGroup,
+    profile: withChain([{ landing: '美国-01', via: '所有-自动' }]),
+  })
+  assert.equal(c.outbounds.find((o) => o.tag === '美国-01').detour, undefined)
+})
+
+test('chain: 落地或前置已经不存在(订阅刷新后) → 安静地不生成', () => {
+  const c = buildConfig({
+    nodes: chainNodes,
+    regionGroups: chainRegionGroups,
+    profile: withChain([
+      { landing: '香港-01', via: '日本-01' },
+      { landing: '美国-01', via: '香港-02' },
+    ]),
+  })
+  assert.equal(c.outbounds.find((o) => o.tag === '美国-01').detour, undefined)
+})
+
+test('chain: 落地是策略组 → 不生成(组不吃 detour 字段,check 会直接报未知字段)', () => {
+  const c = buildConfig({
+    nodes: chainNodes,
+    regionGroups: chainRegionGroups,
+    profile: withChain([{ landing: '美国', via: '日本-01' }]),
+  })
+  assert.equal(c.outbounds.find((o) => o.tag === '美国').detour, undefined)
+})
+
+test('chain: wireguard 端点既可以是落地,也可以是前置', () => {
+  const asLanding = buildConfig({
+    nodes: chainNodes,
+    regionGroups: chainRegionGroups,
+    profile: withChain([{ landing: 'WG-01', via: '日本-01' }]),
+  })
+  assert.equal(asLanding.endpoints.find((e) => e.tag === 'WG-01').detour, '日本-01')
+
+  const asVia = buildConfig({
+    nodes: chainNodes,
+    regionGroups: chainRegionGroups,
+    profile: withChain([{ landing: '美国-01', via: 'WG-01' }]),
+  })
+  assert.equal(asVia.outbounds.find((o) => o.tag === '美国-01').detour, 'WG-01')
+})
+
+test('chain: 订阅自带的 detour(clash dialer-proxy / sing-box JSON)原样进配置', () => {
+  const nativeNodes = [
+    createNode({ tag: '前置', type: 'shadowsocks', server: 'a.com', server_port: 8388, fields: { method: 'aes-256-gcm', password: 'pw' }, source: 'clash' }),
+    createNode({ tag: '落地', type: 'shadowsocks', server: 'b.com', server_port: 8388, fields: { method: 'aes-256-gcm', password: 'pw', detour: '前置' }, source: 'clash' }),
+  ]
+  const c = buildConfig({ nodes: nativeNodes, regionGroups: [], profile })
+  assert.equal(c.outbounds.find((o) => o.tag === '落地').detour, '前置')
+})

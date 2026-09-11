@@ -4,6 +4,7 @@ import { emitGroupOutbounds } from './emit-groups.mjs'
 import { emitUserGroups } from './user-groups.mjs'
 import { buildRoute } from './routing.mjs'
 import { buildDns } from './dns.mjs'
+import { resolveChain } from './chain.mjs'
 
 const TUN_V4 = '172.19.0.1/30'
 const TUN_V6 = 'fdfe:dcba:9876::1/126'
@@ -16,13 +17,24 @@ export const buildConfig = ({ nodes, regionGroups, profile, userGroups }) => {
   // 用户自定义节点组排在自动生成的地区组之后:emitUserGroups 已经保证了成员非空、
   // 无悬空引用、无环(sing-box check 只能挡住第一条,见 user-groups.mjs 的说明)。
   const { outbounds: userGroupOutbounds } = emitUserGroups(userGroups || [], nodes)
-  const outbounds = [
+  const baseOutbounds = [
     { type: 'direct', tag: 'direct' },
     ...emitGroupOutbounds(regionGroups, { proxyTag }),
     ...userGroupOutbounds,
     ...outboundNodes.map(emitOutbound),
   ]
-  const endpoints = wireguardNodes.map(emitEndpoint)
+  const baseEndpoints = wireguardNodes.map(emitEndpoint)
+
+  // 链式代理:把 profile.chain 变成出站上的 detour。必须在这里做,不能只靠内核的
+  // sing-box check —— 悬空引用与成环 check 都不拦,运行期才 FATAL(见 chain.mjs 顶部)。
+  // endpoints 一起进依赖图:wireguard 节点同样可以当前置或落地。
+  const { detour } = resolveChain({
+    outbounds: [...baseOutbounds, ...baseEndpoints],
+    chain: profile.chain,
+  })
+  const withDetour = (o) => (detour[o.tag] ? { ...o, detour: detour[o.tag] } : o)
+  const outbounds = baseOutbounds.map(withDetour)
+  const endpoints = baseEndpoints.map(withDetour)
 
   // 合法出站 tag 集合:仅这些 tag 在生成的 outbounds/endpoints 里真实存在。
   // categories[].target / fallback 若引用集合外的 tag,sing-box check 不会报错,

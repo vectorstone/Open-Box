@@ -1,4 +1,5 @@
 import express from 'express'
+import { normalizeChain } from '../engine/chain.mjs'
 
 const isPlainObject = (v) => typeof v === 'object' && v !== null && !Array.isArray(v)
 const isString = (v) => typeof v === 'string'
@@ -70,6 +71,13 @@ export const validateProfilePatch = (patch) => {
         return 'routing.categories must be an array of { ruleset, target }, ruleset matching /^[A-Za-z0-9._-]+$/'
       }
     }
+  }
+
+  if ('chain' in patch) {
+    // 只校验形状。"这条链路能不能落地"(前置/落地是否还存在、是否成环)在生成配置那一刻
+    // 才判得准——订阅刷新会让节点来了又走,参见 engine/chain.mjs。
+    const normalized = normalizeChain(patch.chain)
+    if (!normalized.ok) return normalized.error
   }
 
   return null

@@ -356,3 +356,54 @@ test('GET /defaults?region=jp → 区域大小写归一化(region 大写,ruleset
     await close()
   }
 })
+
+// -------- 链式代理 profile.chain --------
+
+test('validateProfilePatch chain 非数组 → 报错', () => {
+  assert.ok(validateProfilePatch({ chain: { '落地': '前置' } }))
+})
+
+test('validateProfilePatch chain 项缺字段 / 空值 / 自指 → 报错', () => {
+  assert.ok(validateProfilePatch({ chain: [{ landing: '落地' }] }))
+  assert.ok(validateProfilePatch({ chain: [{ landing: '落地', via: '' }] }))
+  assert.ok(validateProfilePatch({ chain: [{ landing: '落地', via: 1 }] }))
+  assert.ok(validateProfilePatch({ chain: [{ landing: '落地', via: '落地' }] }))
+})
+
+test('validateProfilePatch chain 合法(含空数组)通过', () => {
+  assert.equal(validateProfilePatch({ chain: [] }), null)
+  assert.equal(validateProfilePatch({ chain: [{ landing: '落地', via: '前置' }] }), null)
+})
+
+test('PUT /: chain 按数组整体替换,删得掉链路', async () => {
+  const { baseUrl, close } = await startApp()
+  try {
+    const first = await (await putJson(baseUrl, '/api/openbox/profile', {
+      chain: [{ landing: '落地', via: '前置' }],
+    })).json()
+    assert.deepEqual(first.profile.chain, [{ landing: '落地', via: '前置' }])
+
+    const added = await (await putJson(baseUrl, '/api/openbox/profile', {
+      chain: [{ landing: '落地', via: '前置' }, { landing: '落地2', via: '前置2' }],
+    })).json()
+    assert.equal(added.profile.chain.length, 2)
+
+    // 深合并对对象是按 key 合并的,数组整体替换——这正是用数组存链路的原因
+    const removed = await (await putJson(baseUrl, '/api/openbox/profile', { chain: [] })).json()
+    assert.deepEqual(removed.profile.chain, [])
+  } finally {
+    await close()
+  }
+})
+
+test('PUT /: chain 形状非法 → 400,已有链路不被改动', async () => {
+  const { baseUrl, store, close } = await startApp()
+  try {
+    await putJson(baseUrl, '/api/openbox/profile', { chain: [{ landing: '落地', via: '前置' }] })
+    const res = await putJson(baseUrl, '/api/openbox/profile', { chain: [{ landing: '落地', via: '落地' }] })
+    assert.equal(res.status, 400)
+    assert.deepEqual(store.getProfile().chain, [{ landing: '落地', via: '前置' }])
+  } finally {
+    await close()
+  }
+})

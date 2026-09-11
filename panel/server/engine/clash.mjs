@@ -127,6 +127,11 @@ export const parseClashProxies = (yamlText) => {
     }
     try {
       const { type, fields } = mapper(p)
+      // Clash(Meta)的 dialer-proxy 与 sing-box 的 detour 语义一致:这条节点先经由指定代理
+      // 拨号。原样收进 fields(emit 时写进出站);名字对不上时——订阅改名后很常见——由
+      // chain.mjs 在生成配置那一刻判定并丢弃,而不是留给内核运行期 FATAL。
+      const via = p['dialer-proxy']
+      if (typeof via === 'string' && via) fields.detour = via
       nodes.push(createNode({ tag: p.name, type, server: p.server, server_port: p.port, fields, source: 'clash' }))
     } catch {
       skipped.push({ name: p.name, type: p.type })

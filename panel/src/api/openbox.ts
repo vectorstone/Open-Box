@@ -17,6 +17,14 @@ export interface OpenboxProfileRouting {
   fallback?: string
 }
 
+// 链式代理的一条链路:landing 是落地(出口节点),via 是前置(第一跳,节点或策略组名)。
+// 流量先到前置,再由前置去连落地;前置本身必须是本机直连得上的那一跳。
+// 整份数组覆盖式保存——加/删/改一条就是把完整的新数组 PUT 上去。
+export interface OpenboxProfileChainEntry {
+  landing: string
+  via: string
+}
+
 export interface OpenboxProfileDns {
   split?: boolean
   mode?: 'hijack' | 'dnsmasq'
@@ -32,6 +40,8 @@ export interface OpenboxProfile {
   tun?: { autoRedirect?: boolean }
   dns: OpenboxProfileDns
   routing: OpenboxProfileRouting
+  // 链式代理的链路列表(见 OpenboxProfileChainEntry);后端已实现,这里只补类型。
+  chain?: OpenboxProfileChainEntry[]
   rulesetDir?: string
 }
 

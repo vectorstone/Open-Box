@@ -23,6 +23,11 @@ export const DEFAULT_PROFILE = {
     adRuleset: 'geosite-category-ads-all',
     fallback: 'PROXY',
   },
+  // 链式代理:[{ landing, via }] —— 落地节点经由前置节点/组拨号。空数组 = 全部直连拨号
+  // (不组链)。用数组是为了让深合并整体替换(删链路时不必重写整份 profile),见
+  // engine/chain.mjs。键是节点 tag,和用户自定义组的 members 一样跟着重命名走;节点没了
+  // 这条链路自动失效。
+  chain: [],
   rulesetDir: '/opt/open-box/data/rulesets',
 }
 

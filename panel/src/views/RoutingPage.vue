@@ -45,6 +45,10 @@
             :error="groupsError"
             @retry="loadPolicyGroups"
           />
+          <ChainProxyCard
+            :profile="profile"
+            :patch-profile="patchProfile"
+          />
           <DnsSettingsCard
             :profile="profile"
             :patch-profile="patchProfile"
@@ -69,6 +73,7 @@ import {
   fetchProfile,
   saveProfile,
 } from '@/api/openbox'
+import ChainProxyCard from '@/components/routing/ChainProxyCard.vue'
 import DnsSettingsCard from '@/components/routing/DnsSettingsCard.vue'
 import Ipv6Card from '@/components/routing/Ipv6Card.vue'
 import PolicyGroupsCard from '@/components/routing/PolicyGroupsCard.vue'

@@ -504,6 +504,20 @@ const zh: LANG_MESSAGE = {
   routingPresetGithub: 'GitHub',
   routingPresetTelegram: 'Telegram',
 
+  // --- 链式代理卡片 ---
+  routingChainTitle: '链式代理',
+  routingChainDescription: '让某个节点先经由另一个节点拨号:流量先到前置,再由前置连落地。前置必须是本机直连得上的那一跳。',
+  routingChainEmpty: '还没有链路,所有节点都自己直连拨号。',
+  routingChainAdd: '添加链路',
+  routingChainLandingLabel: '落地(出口)',
+  routingChainViaLabel: '前置(第一跳)',
+  routingChainRemove: '删除',
+  routingChainMissingLanding: '这个节点已经不在了,这条链路不会生效。',
+  routingChainMissingVia: '前置已经不在了,这条链路不会生效。',
+  routingChainViaContainsLanding: '前置的成员里包含落地自己,会形成环,不会生效。',
+  routingChainLoadFailed: '没加载出可选节点:{message}',
+  routingChainNeedTwoNodes: '至少要有两个可用节点才能组链。',
+
   // --- 地区默认值卡片 ---
   routingRegionTitle: '地区默认值',
   routingRegionDescription: '为某个地区应用推荐的分流和 DNS 设置,作为起点。',

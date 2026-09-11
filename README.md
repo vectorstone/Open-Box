@@ -44,10 +44,28 @@ OpenWrt 上的一体化透明代理:一条命令装完 sing-box 内核和管理�
 - **目标分流**:站点集按域名 / 域名后缀 / 关键词 / 规则集 / IP 段匹配,出口在代理页点选,选完即成为默认。规则集来自 MetaCubeX/meta-rules-dat 的 sing 分支,geosite 1899 类、geoip 260 类,可按需下载。
 - **终端分流**:按局域网来源 IP 给指定设备单独指定出口。
 - **DNS 接管**:三种模式——接管 dnsmasq 转发(默认)、防火墙劫持、完全禁用。国内域名走本地解析拿就近 CDN,走代理的域名经代理侧解析,两边分开。
+- **链式代理**:让某个节点先经由另一个节点拨号(前置 → 落地)。前置不存在、选了包含落地自己的组、或几条链路绕成环时,面板在生成配置时就把这条链路丢掉并标出来,而不是让内核启动时 FATAL。见 [`docs/chain-proxy.md`](docs/chain-proxy.md)。
 - **共享网络**:把内核的入站开放给局域网里的其它设备当代理用。
 - **流量统计**:每日流量按终端设备 / 节点 / 访问目标三个维度下钻。
 - **自动更新**:Open-Box 自身与 Geosite / GeoIP 都能按天定时检查,有新版才升。
 - **LuCI 兜底页**:面板打不开时,从路由器自带界面一键停代理、恢复直连。
+
+## 这个 fork 与上游的差异
+
+本仓库是 [liandu2024/Open-Box](https://github.com/liandu2024/Open-Box) 的 fork(`vectorstone/Open-Box`),相对上游多了三件事:
+
+- **链式代理**(前置 → 落地):面板「分流 → 链式代理」配,说明见 [`docs/chain-proxy.md`](docs/chain-proxy.md)。
+- **自编译 sing-box 内核**(`1.14.0-openbox-tcp1`,静态 musl,官方发布页上没有这个资产):发布包在本地构建,
+  `SINGBOX_LOCAL_BIN=<内核路径> SINGBOX_LOCAL_VERSION=<版本> bash scripts/build-release.sh arm64 dist-release`,
+  CI 不再"打标签即发版"(见 `.github/workflows/release.yml` 顶部说明)。
+- **install / update 的下载源指向本 fork**:面板与 LuCI 兜底页的「一键升级」都从本仓库的 release 取包。
+
+与上游保持同步:
+
+```bash
+git remote add upstream https://github.com/liandu2024/Open-Box.git
+git fetch upstream
+```
 
 ## 硬件要求
 
@@ -63,13 +81,13 @@ OpenWrt 上的一体化透明代理:一条命令装完 sing-box 内核和管理�
 SSH 以 root 登录路由器,二选一:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/liandu2024/Open-Box/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/vectorstone/Open-Box/main/scripts/install.sh | sh
 ```
 
 GitHub 访问不畅时用加速版(脚本内置了几个加速站,会依次探测自动挑一个能用的):
 
 ```bash
-curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/liandu2024/Open-Box/main/scripts/install.sh | sh -s -- --mirror
+curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/vectorstone/Open-Box/main/scripts/install.sh | sh -s -- --mirror
 ```
 
 已经有信得过的加速站,也可以指定具体前缀跳过探测:`sh -s -- --mirror <镜像前缀>`。
@@ -89,7 +107,7 @@ curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/liandu2024/Open-
 面板「设置 → 后端设置」里点「检查更新」就能升,也可以在 SSH 里跑:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/liandu2024/Open-Box/main/scripts/update.sh | sh
+curl -fsSL https://raw.githubusercontent.com/vectorstone/Open-Box/main/scripts/update.sh | sh
 ```
 
 强制直连 GitHub 加 `-s -- --direct`,强制走加速加 `-s -- --mirror [前缀]`。不带参数时沿用安装时选的下载通道。
@@ -100,10 +118,10 @@ curl -fsSL https://raw.githubusercontent.com/liandu2024/Open-Box/main/scripts/up
 
 ```bash
 # 停服务、清理系统改动、删程序文件;默认保留 data/
-curl -fsSL https://raw.githubusercontent.com/liandu2024/Open-Box/main/scripts/uninstall.sh | sh
+curl -fsSL https://raw.githubusercontent.com/vectorstone/Open-Box/main/scripts/uninstall.sh | sh
 
 # 连 data/ 一起删,彻底清干净
-curl -fsSL https://raw.githubusercontent.com/liandu2024/Open-Box/main/scripts/uninstall.sh | sh -s -- --purge
+curl -fsSL https://raw.githubusercontent.com/vectorstone/Open-Box/main/scripts/uninstall.sh | sh -s -- --purge
 ```
 
 不加 `--purge` 且在真实终端里交互执行时,脚本会追问一次是否保留 `data/`;通过管道非交互执行问不到,按"保留"处理。

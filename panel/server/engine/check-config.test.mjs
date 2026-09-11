@@ -163,3 +163,41 @@ test('生成的配置通过 sing-box check(dns.mode=dnsmasq;仅 dns-in 入站被
     fs.rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test('生成的配置通过 sing-box check(链式代理:落地带上指向前置的 detour)', { skip: hasBin ? false : 'sing-box 二进制缺失' }, () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'openbox-checkchain-'))
+  try {
+    const sub = [
+      'ss://YWVzLTI1Ni1nY206c2VjcmV0cHc=@us.example.com:8388#US-01',
+      'ss://YWVzLTI1Ni1nY206c2VjcmV0cHc=@jp.example.com:8388#JP-01',
+    ].join('\n')
+    const { nodes } = parseSubscription(sub)
+    const renamed = renameNodes(nodes)
+    const { groups } = groupNodesByRegion(renamed)
+    // 拿两个真实生成出来的节点 tag 组一条链:落地的连接经前置拨号
+    const landing = renamed[0].tag
+    const via = renamed[1].tag
+
+    const profile = {
+      ipv6: true,
+      dns: { split: true, direct: '223.5.5.5', proxy: 'https://1.1.1.1/dns-query' },
+      routing: { proxyTag: 'PROXY', categories: [], directRulesets: ['geosite-cn', 'geoip-cn'], adBlock: false, adRuleset: 'geosite-category-ads-all', fallback: 'PROXY' },
+      rulesetDir: dir,
+      clashApiSecret: 'testsecret',
+      chain: [{ landing, via }],
+    }
+    const config = buildConfig({ nodes: renamed, regionGroups: groups, profile })
+
+    // 链路真的落进了出站:detour 是 sing-box 的拨号字段,check 只验字段合法性、不验语义
+    assert.equal(config.outbounds.find((o) => o.tag === landing)?.detour, via)
+    assert.equal(config.outbounds.find((o) => o.tag === via)?.detour, undefined)
+
+    const { rulesetTags } = buildRoute(profile.routing, dir)
+    for (const tag of rulesetTags) compileSrs(dir, tag)
+    const cfgPath = path.join(dir, 'config.json')
+    fs.writeFileSync(cfgPath, JSON.stringify(config))
+    execFileSync(sbBin, ['check', '-c', cfgPath])
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
