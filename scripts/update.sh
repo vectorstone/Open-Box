@@ -36,6 +36,10 @@
 #                                    # 页面侧对每个渠道各发起一次 fs.exec——rpcd 的
 #                                    # fs.exec 有超时,一次 exec 里探测全部渠道有拖到
 #                                    # 超时的风险,所以改成"一次 exec 只探测一个"。
+#   sh update.sh --tarball <路径>    # 开发/测试通道:直接用本地发布包升级,不访问
+#                                    # 网络(供 QEMU/Docker 本地验证环境使用)。与
+#                                    # --direct/--mirror/--detach/--probe/--cancel 均
+#                                    # 互斥;"已是最新版本"的判断与网络通道完全一致。
 #
 # 不带 --direct/--mirror 时沿用安装时选择的下载通道(记录在 data/channel),这是
 # 保持向后兼容的默认行为。下载(到 /tmp)与 SHA256 校验都在临时目录完成;只有
@@ -410,11 +414,13 @@ else
 fi
 PROBE_CHANNEL=""
 CANCEL_MODE=0
+TARBALL=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --detach)
       [ -z "$PROBE_CHANNEL" ] || die "--detach 不能与 --probe 同时使用。"
       [ "$CANCEL_MODE" = "0" ] || die "--detach 不能与 --cancel 同时使用。"
+      [ -z "$TARBALL" ] || die "--detach 不能与 --tarball 同时使用(--detach 派生子进程只转发通道选择,不转发本地包路径;本地验证请前台同步执行)。"
       DETACH=1
       shift
       ;;
@@ -422,6 +428,7 @@ while [ $# -gt 0 ]; do
       [ "$DETACH" = "0" ] || die "--cancel 不能与 --detach 同时使用。"
       [ -z "$CHANNEL_OVERRIDE" ] || die "--cancel 不能与 --direct/--mirror 同时使用。"
       [ -z "$PROBE_CHANNEL" ] || die "--cancel 不能与 --probe 同时使用。"
+      [ -z "$TARBALL" ] || die "--cancel 不能与 --tarball 同时使用。"
       CANCEL_MODE=1
       shift
       ;;
@@ -429,6 +436,7 @@ while [ $# -gt 0 ]; do
       [ -z "$CHANNEL_OVERRIDE" ] || die "--direct 不能与 --mirror 同时使用。"
       [ -z "$PROBE_CHANNEL" ] || die "--direct 不能与 --probe 同时使用。"
       [ "$CANCEL_MODE" = "0" ] || die "--direct 不能与 --cancel 同时使用。"
+      [ -z "$TARBALL" ] || die "--direct 不能与 --tarball 同时使用(本地包不需要选择下载通道)。"
       CHANNEL_OVERRIDE="direct"
       shift
       ;;
@@ -436,6 +444,7 @@ while [ $# -gt 0 ]; do
       [ -z "$CHANNEL_OVERRIDE" ] || die "--mirror 不能与 --direct 同时使用。"
       [ -z "$PROBE_CHANNEL" ] || die "--mirror 不能与 --probe 同时使用。"
       [ "$CANCEL_MODE" = "0" ] || die "--mirror 不能与 --cancel 同时使用。"
+      [ -z "$TARBALL" ] || die "--mirror 不能与 --tarball 同时使用(本地包不需要选择下载通道)。"
       CHANNEL_OVERRIDE="mirror"
       shift
       # 值可选:紧跟的下一个参数若不是以 -- 开头,当作镜像前缀消费掉;否则
@@ -455,10 +464,22 @@ while [ $# -gt 0 ]; do
         esac
       fi
       ;;
+    --tarball)
+      # 开发/测试通道:本地发布包(见文件头说明)。与其它所有模式互斥——本地包
+      # 没有通道选择,也没有"后台派生"的意义。
+      [ "$DETACH" = "0" ] || die "--tarball 不能与 --detach 同时使用(--detach 派生子进程只转发通道选择,不转发本地包路径;本地验证请前台同步执行)。"
+      [ -z "$CHANNEL_OVERRIDE" ] || die "--tarball 不能与 --direct/--mirror 同时使用(本地包不需要选择下载通道)。"
+      [ -z "$PROBE_CHANNEL" ] || die "--tarball 不能与 --probe 同时使用。"
+      [ "$CANCEL_MODE" = "0" ] || die "--tarball 不能与 --cancel 同时使用。"
+      [ $# -ge 2 ] || die "--tarball 需要一个参数(本地发布包 tar.gz 的路径)。"
+      TARBALL="$2"
+      shift 2
+      ;;
     --probe)
       [ "$DETACH" = "0" ] || die "--probe 不能与 --detach 同时使用。"
       [ -z "$CHANNEL_OVERRIDE" ] || die "--probe 不能与 --direct/--mirror 同时使用。"
       [ "$CANCEL_MODE" = "0" ] || die "--probe 不能与 --cancel 同时使用。"
+      [ -z "$TARBALL" ] || die "--probe 不能与 --tarball 同时使用。"
       shift
       [ $# -ge 1 ] || die "--probe 需要一个参数:direct 或镜像前缀(例如:--probe direct、--probe https://ghfast.top)。"
       PROBE_CHANNEL="$1"
@@ -470,7 +491,7 @@ while [ $# -gt 0 ]; do
       shift
       ;;
     *)
-      die "未知参数:$1(可用参数:--detach、--direct、--mirror [前缀]、--probe <渠道>、--cancel)"
+      die "未知参数:$1(可用参数:--detach、--direct、--mirror [前缀]、--tarball <路径>、--probe <渠道>、--cancel)"
       ;;
   esac
 done
@@ -662,6 +683,10 @@ check_installed() {
   fi
 }
 
+check_tarball() {
+  [ -f "$TARBALL" ] || die "--tarball 指定的文件不存在:$TARBALL"
+}
+
 map_arch() {
   RAW_ARCH=$(uname -m 2>/dev/null || true)
   case "$RAW_ARCH" in
@@ -780,6 +805,7 @@ info "预检..."
 check_root
 check_openwrt
 check_installed
+[ -z "$TARBALL" ] || check_tarball
 map_arch
 cleanup_stale_stage_dirs
 check_storage
@@ -870,65 +896,88 @@ trap cleanup EXIT INT TERM
 # exit 0,不用担心留下未追踪的临时目录。
 check_cancel_and_abort
 
-if [ "$CHANNEL" = "mirror" ] && [ -z "$MIRROR_PREFIX" ]; then
-  write_status probing "" "" ""
-  select_builtin_mirror
+if [ -n "$TARBALL" ]; then
+  # ---------- 本地包通道(--tarball,开发/测试用)----------
+  # 与 install.sh 的同名通道同款语义:只复制到临时目录,不访问网络。校验和兄
+  # 弟文件存在时一并带上(文件名按 $ASSET 归一,兼容带版本号与不带版本号两种
+  # 发布包命名)。本地验证的典型用法:改版本号重 build 后用 --tarball 验证
+  # "跨版本升级 + 保留订阅/密码" 的完整链路(真机验收指南第 8 步的本地版)。
+  info "使用本地升级包:$TARBALL"
+  case "$TARBALL" in
+    *-"$ARCH".tar.gz) ;;
+    *) warn "包名未以 -$ARCH.tar.gz 结尾,请确认架构匹配(本机 $RAW_ARCH → $ARCH)。" ;;
+  esac
+  cp -- "$TARBALL" "$TMP_DL/$ASSET" || die "复制本地升级包失败:$TARBALL。现有安装未改动。"
+  if [ -f "$TARBALL.sha256" ]; then
+    awk -v asset="$ASSET" 'NR==1{print $1 "  " asset}' "$TARBALL.sha256" > "$TMP_DL/$ASSET.sha256" \
+      || die "读取校验文件失败:$TARBALL.sha256。现有安装未改动。"
+  fi
+else
+  if [ "$CHANNEL" = "mirror" ] && [ -z "$MIRROR_PREFIX" ]; then
+    write_status probing "" "" ""
+    select_builtin_mirror
+  fi
+
+  # releases/latest/download/<资产> 是个**会动的指针**:78MB 正文要下几分钟,几十字节的
+  # .sha256 是另一次请求。两次请求之间只要发布了新版本,拿到的就是"旧正文 + 新校验和",
+  # 校验必然失败。真机 192.168.3.35 上就这么失败过一次:v0.1.49 的包配上 v0.1.50 的
+  # 校验和,报"SHA256 不匹配",而两个文件各自都是完好的。
+  #
+  # 办法:正文前后各取一次校验和,两次不一致就说明中途发新版了,丢掉重下(最多三轮)。
+  # 这样仍然是"每次都升到最新版、隔多少个版本都能直接升",只是不再把跨越发布边界的
+  # 那一次误判成文件损坏。
+  _dl_round=0
+  while :; do
+    _dl_round=$((_dl_round + 1))
+
+    fetch_to_file "$(build_url "$SHA_URL")" "$TMP_DL/$ASSET.sha256.pre" || die "下载校验文件失败:$SHA_URL。现有安装未改动。"
+    check_cancel_and_abort
+
+    info "下载发布包:$ASSET"
+    ASSET_DL_URL=$(build_url "$ASSET_URL")
+    ASSET_TOTAL=$(probe_content_length "$ASSET_DL_URL")
+    case "$ASSET_TOTAL" in ''|*[!0-9]*) ASSET_TOTAL='' ;; esac
+    download_with_progress "$ASSET_DL_URL" "$TMP_DL/$ASSET" "$ASSET_TOTAL" || die "下载升级包失败:$ASSET_URL。现有安装未改动。"
+
+    check_cancel_and_abort
+
+    fetch_to_file "$(build_url "$SHA_URL")" "$TMP_DL/$ASSET.sha256" || die "下载校验文件失败:$SHA_URL。现有安装未改动。"
+
+    check_cancel_and_abort
+
+    # 两次校验和一致 = 这一轮没跨过发布边界,拿到的是同一个版本的正文与校验和
+    if cmp -s "$TMP_DL/$ASSET.sha256.pre" "$TMP_DL/$ASSET.sha256"; then
+      break
+    fi
+    if [ "$_dl_round" -ge 3 ]; then
+      die "连续三次在下载过程中赶上新版本发布,已放弃升级,现有安装未做任何改动。稍后重试即可。"
+    fi
+    info "下载期间发布了更新的版本,重新下载最新的升级包..."
+  done
 fi
-
-# releases/latest/download/<资产> 是个**会动的指针**:78MB 正文要下几分钟,几十字节的
-# .sha256 是另一次请求。两次请求之间只要发布了新版本,拿到的就是"旧正文 + 新校验和",
-# 校验必然失败。真机 192.168.3.35 上就这么失败过一次:v0.1.49 的包配上 v0.1.50 的
-# 校验和,报"SHA256 不匹配",而两个文件各自都是完好的。
-#
-# 办法:正文前后各取一次校验和,两次不一致就说明中途发新版了,丢掉重下(最多三轮)。
-# 这样仍然是"每次都升到最新版、隔多少个版本都能直接升",只是不再把跨越发布边界的
-# 那一次误判成文件损坏。
-_dl_round=0
-while :; do
-  _dl_round=$((_dl_round + 1))
-
-  fetch_to_file "$(build_url "$SHA_URL")" "$TMP_DL/$ASSET.sha256.pre" || die "下载校验文件失败:$SHA_URL。现有安装未改动。"
-  check_cancel_and_abort
-
-  info "下载发布包:$ASSET"
-  ASSET_DL_URL=$(build_url "$ASSET_URL")
-  ASSET_TOTAL=$(probe_content_length "$ASSET_DL_URL")
-  case "$ASSET_TOTAL" in ''|*[!0-9]*) ASSET_TOTAL='' ;; esac
-  download_with_progress "$ASSET_DL_URL" "$TMP_DL/$ASSET" "$ASSET_TOTAL" || die "下载升级包失败:$ASSET_URL。现有安装未改动。"
-
-  check_cancel_and_abort
-
-  fetch_to_file "$(build_url "$SHA_URL")" "$TMP_DL/$ASSET.sha256" || die "下载校验文件失败:$SHA_URL。现有安装未改动。"
-
-  check_cancel_and_abort
-
-  # 两次校验和一致 = 这一轮没跨过发布边界,拿到的是同一个版本的正文与校验和
-  if cmp -s "$TMP_DL/$ASSET.sha256.pre" "$TMP_DL/$ASSET.sha256"; then
-    break
-  fi
-  if [ "$_dl_round" -ge 3 ]; then
-    die "连续三次在下载过程中赶上新版本发布,已放弃升级,现有安装未做任何改动。稍后重试即可。"
-  fi
-  info "下载期间发布了更新的版本,重新下载最新的升级包..."
-done
 
 write_status verifying "" "" ""
 
-if command -v sha256sum >/dev/null 2>&1; then
-  SHA_TOOL="sha256sum"
-  SHA_ARGS="-c"
-elif command -v shasum >/dev/null 2>&1; then
-  SHA_TOOL="shasum"
-  SHA_ARGS="-a 256 -c"
+if [ ! -f "$TMP_DL/$ASSET.sha256" ]; then
+  # 只有 --tarball 且未提供 .sha256 兄弟文件才会走到这里(下载通道总会取回校验文件)。
+  warn "本地升级包没有随附校验文件,跳过 SHA256 校验。"
 else
-  die "系统缺少 sha256sum/shasum,无法校验升级包完整性。现有安装未改动。"
-fi
+  if command -v sha256sum >/dev/null 2>&1; then
+    SHA_TOOL="sha256sum"
+    SHA_ARGS="-c"
+  elif command -v shasum >/dev/null 2>&1; then
+    SHA_TOOL="shasum"
+    SHA_ARGS="-a 256 -c"
+  else
+    die "系统缺少 sha256sum/shasum,无法校验升级包完整性。现有安装未改动。"
+  fi
 
-info "校验 SHA256..."
-if ! ( cd "$TMP_DL" && $SHA_TOOL $SHA_ARGS "$ASSET.sha256" >/dev/null ); then
-  die "升级包校验失败(SHA256 不匹配),已放弃升级,现有安装未做任何改动。"
+  info "校验 SHA256..."
+  if ! ( cd "$TMP_DL" && $SHA_TOOL $SHA_ARGS "$ASSET.sha256" >/dev/null ); then
+    die "升级包校验失败(SHA256 不匹配),已放弃升级,现有安装未做任何改动。"
+  fi
+  info "校验通过。"
 fi
-info "校验通过。"
 
 # ---------- 解包(校验通过之后才做,且解到 /opt 所在文件系统,不是 /tmp)----------
 # 实测:tarball 约 78MB,解开后约 204MB,合计约 282MB;512MB 设备的 tmpfs(/tmp)

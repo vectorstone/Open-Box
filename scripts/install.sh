@@ -7,6 +7,8 @@
 #                                   # 选中第一个探测通过的(见下方 BUILTIN_MIRRORS)
 #   sh install.sh --mirror <前缀>   # 通过镜像加速下载,使用给定的镜像前缀,
 #                                   # 例如 --mirror ghproxy.example.com
+#   sh install.sh --tarball <路径>  # 开发/测试通道:直接用本地发布包安装,
+#                                   # 不访问网络(供 QEMU/Docker 本地验证环境使用)
 #
 # 设计要点(修改本脚本时不要丢掉):
 # - 校验通过前绝不触碰 /opt:下载与 SHA256 校验都发生在临时目录,任何一步失败都
@@ -18,6 +20,10 @@
 #   生效(P5 review 踩过的坑,详见 openwrt/luci 相关记录)。
 # - 若 /opt/open-box 已存在完整安装,拒绝安装并提示改用 update.sh;但如果里面
 #   只剩 data/(此前卸载时选择了保留数据),允许继续安装并复用这份数据。
+# - --tarball 是开发/测试通道:生产安装只走 GitHub releases 直链。本地包的
+#   完整性由构建侧(build-release.sh 的供应链固定)保证,这里只在校验和兄弟
+#   文件 <路径>.sha256 存在时才校验,不存在则警告后放行——不能让"开发机没
+#   顺手生成 .sha256"阻断本地验证,但生产路径的强校验一个字都不放松。
 
 set -eu
 
@@ -32,6 +38,7 @@ MIN_MEM_KB=450000
 
 CHANNEL="direct"
 MIRROR_PREFIX=""
+TARBALL=""
 
 # ---------- 基础输出 ----------
 info() { echo "[open-box] $*"; }
@@ -43,12 +50,14 @@ die() {
 
 usage() {
   cat <<'EOF'
-用法: sh install.sh [--mirror [前缀]]
+用法: sh install.sh [--mirror [前缀]] [--tarball <路径>]
 
   --mirror          使用镜像加速下载发布包,依次探测内置镜像列表,选用第一个
                      探测通过的(不知道用哪个加速站时用这个)
   --mirror <前缀>   使用镜像加速下载发布包,指定具体前缀,例如:
                      --mirror ghproxy.example.com
+  --tarball <路径>  开发/测试通道:用本地发布包安装,不访问网络
+                     (与 --mirror 互斥;可选提供 <路径>.sha256 供校验)
   -h, --help        显示本帮助
 EOF
 }
@@ -85,6 +94,12 @@ while [ $# -gt 0 ]; do
         esac
       fi
       ;;
+    --tarball)
+      # 值必填。本地发布包路径,开发/测试通道(见文件头说明)。
+      [ $# -ge 2 ] || die "--tarball 需要一个参数(本地发布包 tar.gz 的路径)"
+      TARBALL="$2"
+      shift 2
+      ;;
     -h|--help)
       usage
       exit 0
@@ -95,7 +110,16 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+# --tarball 与 --mirror 互斥:本地包不需要镜像加速,同时给出只可能是命令拼错。
+if [ -n "$TARBALL" ] && [ "$CHANNEL" = "mirror" ]; then
+  die "--tarball 与 --mirror 互斥:本地包安装不需要镜像加速。"
+fi
+
 # ---------- 预检 ----------
+check_tarball() {
+  [ -f "$TARBALL" ] || die "--tarball 指定的文件不存在:$TARBALL"
+}
+
 check_root() {
   [ "$(id -u)" = "0" ] || die "请以 root 身份运行本脚本(OpenWrt 默认通过 SSH 以 root 登录)。"
 }
@@ -175,6 +199,7 @@ check_conflicts() {
 info "开始预检..."
 check_root
 check_openwrt
+[ -z "$TARBALL" ] || check_tarball
 map_arch
 check_storage
 check_memory
@@ -320,43 +345,64 @@ select_builtin_mirror() {
 TMP_DL=$(mktemp -d "${TMPDIR:-/tmp}/open-box-install.XXXXXX") || die "无法创建临时目录。"
 trap 'safe_rm_rf "$TMP_DL"' EXIT INT TERM
 
-if [ "$CHANNEL" = "mirror" ] && [ -z "$MIRROR_PREFIX" ]; then
-  select_builtin_mirror
-fi
-
-# releases/latest/download/<资产> 是会动的指针:正文与 .sha256 是两次请求,中间只要
-# 发布了新版本,就会拿到"旧正文 + 新校验和",校验失败但两个文件其实都没坏(update.sh
-# 里有同一段说明,那边是真机上实际踩到的)。正文前后各取一次校验和,不一致就重下。
-_dl_round=0
-while :; do
-  _dl_round=$((_dl_round + 1))
-  fetch_to_file "$(build_url "$SHA_URL")" "$TMP_DL/$ASSET.sha256.pre" || die "下载校验文件失败:$SHA_URL"
-  info "下载发布包:$ASSET"
-  fetch_to_file "$(build_url "$ASSET_URL")" "$TMP_DL/$ASSET" || die "下载安装包失败:$ASSET_URL"
-  fetch_to_file "$(build_url "$SHA_URL")" "$TMP_DL/$ASSET.sha256" || die "下载校验文件失败:$SHA_URL"
-  cmp -s "$TMP_DL/$ASSET.sha256.pre" "$TMP_DL/$ASSET.sha256" && break
-  [ "$_dl_round" -ge 3 ] && die "连续三次在下载过程中赶上新版本发布,已放弃安装,系统未做任何改动。稍后重试即可。"
-  info "下载期间发布了更新的版本,重新下载最新的安装包..."
-done
-
-# ---------- 校验(通过之前绝不允许写 /opt) ----------
-if command -v sha256sum >/dev/null 2>&1; then
-  SHA_TOOL="sha256sum"
-  SHA_ARGS="-c"
-elif command -v shasum >/dev/null 2>&1; then
-  SHA_TOOL="shasum"
-  SHA_ARGS="-a 256 -c"
+if [ -n "$TARBALL" ]; then
+  # ---------- 本地包通道(--tarball,开发/测试用)----------
+  # 只复制到临时目录,不访问网络。校验和兄弟文件存在时一并带上(校验段的
+  # 文件名按 $ASSET 归一,兼容带版本号与不带版本号两种发布包命名)。
+  info "使用本地发布包:$TARBALL"
+  case "$TARBALL" in
+    *-"$ARCH".tar.gz) ;;
+    *) warn "包名未以 -$ARCH.tar.gz 结尾,请确认架构匹配(本机 $RAW_ARCH → $ARCH)。" ;;
+  esac
+  cp -- "$TARBALL" "$TMP_DL/$ASSET" || die "复制本地发布包失败:$TARBALL"
+  if [ -f "$TARBALL.sha256" ]; then
+    awk -v asset="$ASSET" 'NR==1{print $1 "  " asset}' "$TARBALL.sha256" > "$TMP_DL/$ASSET.sha256" \
+      || die "读取校验文件失败:$TARBALL.sha256"
+  fi
 else
-  die "系统缺少 sha256sum/shasum,无法校验安装包完整性。"
+  if [ "$CHANNEL" = "mirror" ] && [ -z "$MIRROR_PREFIX" ]; then
+    select_builtin_mirror
+  fi
+
+  # releases/latest/download/<资产> 是会动的指针:正文与 .sha256 是两次请求,中间只要
+  # 发布了新版本,就会拿到"旧正文 + 新校验和",校验失败但两个文件其实都没坏(update.sh
+  # 里有同一段说明,那边是真机上实际踩到的)。正文前后各取一次校验和,不一致就重下。
+  _dl_round=0
+  while :; do
+    _dl_round=$((_dl_round + 1))
+    fetch_to_file "$(build_url "$SHA_URL")" "$TMP_DL/$ASSET.sha256.pre" || die "下载校验文件失败:$SHA_URL"
+    info "下载发布包:$ASSET"
+    fetch_to_file "$(build_url "$ASSET_URL")" "$TMP_DL/$ASSET" || die "下载安装包失败:$ASSET_URL"
+    fetch_to_file "$(build_url "$SHA_URL")" "$TMP_DL/$ASSET.sha256" || die "下载校验文件失败:$SHA_URL"
+    cmp -s "$TMP_DL/$ASSET.sha256.pre" "$TMP_DL/$ASSET.sha256" && break
+    [ "$_dl_round" -ge 3 ] && die "连续三次在下载过程中赶上新版本发布,已放弃安装,系统未做任何改动。稍后重试即可。"
+    info "下载期间发布了更新的版本,重新下载最新的安装包..."
+  done
 fi
 
-info "校验 SHA256..."
-# 下面这行故意不给 $SHA_ARGS 加引号:shasum 分支需要拆成两个参数(-a 256),
-# 引号会把它们粘成一个非法参数。
-if ! ( cd "$TMP_DL" && $SHA_TOOL $SHA_ARGS "$ASSET.sha256" >/dev/null ); then
-  die "安装包校验失败(SHA256 不匹配),已放弃安装,系统未做任何改动。"
+# ---------- 校验(通过之前绝不允许写 /opt)----------
+if [ ! -f "$TMP_DL/$ASSET.sha256" ]; then
+  # 只有 --tarball 且未提供 .sha256 兄弟文件才会走到这里(下载通道总会取回校验文件)。
+  warn "本地发布包没有随附校验文件,跳过 SHA256 校验。"
+else
+  if command -v sha256sum >/dev/null 2>&1; then
+    SHA_TOOL="sha256sum"
+    SHA_ARGS="-c"
+  elif command -v shasum >/dev/null 2>&1; then
+    SHA_TOOL="shasum"
+    SHA_ARGS="-a 256 -c"
+  else
+    die "系统缺少 sha256sum/shasum,无法校验安装包完整性。"
+  fi
+
+  info "校验 SHA256..."
+  # 下面这行故意不给 $SHA_ARGS 加引号:shasum 分支需要拆成两个参数(-a 256),
+  # 引号会把它们粘成一个非法参数。
+  if ! ( cd "$TMP_DL" && $SHA_TOOL $SHA_ARGS "$ASSET.sha256" >/dev/null ); then
+    die "安装包校验失败(SHA256 不匹配),已放弃安装,系统未做任何改动。"
+  fi
+  info "校验通过。"
 fi
-info "校验通过。"
 
 # ---------- 铺装(校验通过后才允许写 /opt) ----------
 mkdir -p "$INSTALL_ROOT" || die "无法创建 $INSTALL_ROOT(权限不足?)。"

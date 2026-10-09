@@ -11,3 +11,6 @@ panel/.tools/sing-box
 .build-cache/
 # build-release.sh 的输出目录(本地出包用;CI 里作为 artifact 上传,同样不入库)
 dist-release/
+
+# dev-vm.sh / dev-smoke.sh 的本地资产(镜像、ssh key、rootfs 缓存、provision 脚本)
+.dev-vm/
