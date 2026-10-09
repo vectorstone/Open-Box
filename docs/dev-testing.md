@@ -37,8 +37,12 @@ eth1  SLIRP#2 ── wan 区,dhcp client(互联网出口,opkg/规则集下载)
 
 - Mac 经 hostfwd 进来的流量源地址落在 LAN 区,顺带验证了 `firewall.openbox_panel`
   规则(LAN→tcp/2026)本身。
-- "局域网客户端"用 **netns + veth 接入 br-lan**(需 `ip-full`,setup 时已装):
-  L2 语义与真实客户端一致,且可脚本化断言。
+- "局域网客户端"用 **netns + veth 接入 br-lan**(需 `ip-full kmod-veth`,setup 时已装):
+  L2 语义与真实客户端一致,且可脚本化断言。客户端用静态地址 192.168.1.50
+  (SLIRP 内置 DHCP 与 dnsmasq 同在 br-lan, udhcpc 可能收到 SLIRP 的 OFFER,静态更确定)。
+- 端口映射依赖一条**回包路由**:`10.0.2.0/24 dev br-lan`(provisioning 时写入 uci 持久化)。
+  SLIRP hostfwd 的连接源地址是 10.0.2.2,不在 LAN 子网内,没有这条路由回包会被默认路由
+  送去 WAN 的 SLIRP 丢弃——表现为"服务全正常但 SSH 卡 banner"。
 
 ### 首次搭建
 
